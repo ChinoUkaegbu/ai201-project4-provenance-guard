@@ -15,6 +15,7 @@ import uuid
 
 from flask import Blueprint, jsonify, request
 
+from app.audit.logger import log_decision
 from app.extensions import limiter
 from app.pipeline.llm_classifier import run_llm_classifier
 
@@ -76,6 +77,17 @@ def submit():
         label = "Likely Written by a Person (placeholder)"
     else:
         label = "Authorship Unclear (placeholder)"
+
+    # ── 5. Audit log ──────────────────────────────────────────────────────────
+    # Written before the response is returned so every submission is recorded
+    # even if the caller never follows up.
+    log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        attribution=attribution,
+        confidence=confidence,
+        llm_score=signal_1["raw_score"],
+    )
 
     return (
         jsonify(
