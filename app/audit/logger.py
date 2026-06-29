@@ -126,7 +126,7 @@ def log_decision(
 def get_log(limit: int = 50) -> list[dict]:
     """
     Return the most recent *limit* audit log entries as a list of dicts.
-    Used by GET /log (to be implemented) and for inspection during testing.
+    Used by GET /log and for inspection during testing.
     """
     conn = _get_connection()
     try:
@@ -134,5 +134,91 @@ def get_log(limit: int = 50) -> list[dict]:
             "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [json.loads(row["raw_entry"]) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_entry_by_content_id(content_id: str) -> dict | None:
+    """
+    Return the most recent decision entry for *content_id*, or None if not found.
+    Used by the appeal endpoint to validate the content_id and verify creator_id.
+    """
+    conn = _get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT raw_entry FROM audit_log
+            WHERE content_id = ? AND entry_type = 'decision'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (content_id,),
+        ).fetchone()
+        return json.loads(row["raw_entry"]) if row else None
+    finally:
+        conn.close()
+
+
+def log_appeal(
+    appeal_id: str,
+    content_id: str,
+    creator_id: str,
+    reasoning: str,
+    evidence_url: str | None,
+    submitted_at: str,
+) -> None:
+    """
+    Write an appeal entry to the audit log and update the original
+    decision's status to 'under_review'.
+
+    Two writes happen:
+    1. A new row with entry_type='appeal' capturing the creator's reasoning.
+    2. The original decision row's status updated to 'under_review' so the
+       full log reflects the current state of the content.
+    """
+    raw_entry = {
+        "appeal_id": appeal_id,
+        "content_id": content_id,
+        "creator_id": creator_id,
+        "timestamp": submitted_at,
+        "entry_type": "appeal",
+        "reasoning": reasoning,
+        "evidence_url": evidence_url,
+        "status": "under_review",
+    }
+
+    conn = _get_connection()
+    try:
+        # Write the appeal entry
+        conn.execute(
+            """
+            INSERT INTO audit_log
+                (content_id, creator_id, timestamp, entry_type,
+                 attribution, confidence, llm_score, status, raw_entry)
+            SELECT
+                ?, ?, ?, 'appeal',
+                attribution, confidence, llm_score, 'under_review', ?
+            FROM audit_log
+            WHERE content_id = ? AND entry_type = 'decision'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (content_id, creator_id, submitted_at, json.dumps(raw_entry), content_id),
+        )
+        # Update the original decision's status in its raw_entry JSON
+        row = conn.execute(
+            """
+            SELECT id, raw_entry FROM audit_log
+            WHERE content_id = ? AND entry_type = 'decision'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (content_id,),
+        ).fetchone()
+        if row:
+            updated = json.loads(row["raw_entry"])
+            updated["status"] = "under_review"
+            conn.execute(
+                "UPDATE audit_log SET status = 'under_review', raw_entry = ? WHERE id = ?",
+                (json.dumps(updated), row["id"]),
+            )
+        conn.commit()
     finally:
         conn.close()
