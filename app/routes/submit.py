@@ -18,6 +18,8 @@ from flask import Blueprint, jsonify, request
 from app.audit.logger import log_decision
 from app.extensions import limiter
 from app.pipeline.llm_classifier import run_llm_classifier
+from app.pipeline.stylometric import run_stylometric
+from app.pipeline.fusion import fuse
 
 submit_bp = Blueprint("submit", __name__)
 
@@ -65,22 +67,39 @@ def submit():
             500,
         )
 
-    # ── 4. Build response ─────────────────────────────────────────────────────
-    # confidence and label are placeholders until Signal 2 + fusion are wired in.
-    attribution = signal_1["verdict"]
-    confidence = signal_1["raw_score"]  # placeholder: will become fused score
+    # ── 4. Signal 2 — stylometric engine (pure Python, no API call) ──────────
+    signal_2 = run_stylometric(text)
 
-    # Placeholder label — will be replaced by the label generator
-    if confidence >= 0.70:
-        label = "Likely AI-Generated (placeholder)"
-    elif confidence <= 0.30:
-        label = "Likely Written by a Person (placeholder)"
+    # ── 5. Confidence fusion ──────────────────────────────────────────────────
+    # Combines both scores using a disagreement-penalised weighted average.
+    # See planning.md § 3 for the full algorithm.
+    confidence, attribution = fuse(
+        llm_score=signal_1["raw_score"],
+        stylo_score=signal_2["raw_score"],
+    )
+
+    # ── 6. Transparency label ─────────────────────────────────────────────────
+    # Three variants per planning.md § 4. Confidence value informs the
+    # intensity of the language within each variant.
+    if attribution == "ai":
+        if confidence >= 0.90:
+            label = "Likely AI-Generated (high confidence)"
+        else:
+            label = "Likely AI-Generated (moderate-high confidence)"
+    elif attribution == "human":
+        if confidence <= 0.10:
+            label = "Likely Written by a Person (high confidence)"
+        else:
+            label = "Likely Written by a Person (moderate-high confidence)"
     else:
-        label = "Authorship Unclear (placeholder)"
+        # Uncertain — check whether signals actively disagreed
+        disagreement = abs(signal_1["raw_score"] - signal_2["raw_score"])
+        if disagreement > 0.30:
+            label = "Authorship Unclear — our two signals gave conflicting results"
+        else:
+            label = "Authorship Unclear"
 
-    # ── 5. Audit log ──────────────────────────────────────────────────────────
-    # Written before the response is returned so every submission is recorded
-    # even if the caller never follows up.
+    # ── 7. Audit log ──────────────────────────────────────────────────────────
     log_decision(
         content_id=content_id,
         creator_id=creator_id,
@@ -101,6 +120,11 @@ def submit():
                     "verdict": signal_1["verdict"],
                     "raw_score": signal_1["raw_score"],
                     "reasoning_excerpt": signal_1["reasoning_excerpt"],
+                },
+                "signal_2": {
+                    "verdict": signal_2["verdict"],
+                    "raw_score": signal_2["raw_score"],
+                    "sub_scores": signal_2["sub_scores"],
                 },
                 "status": "classified",
             }
