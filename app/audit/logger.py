@@ -18,10 +18,11 @@ Schema (audit_log table):
     timestamp     TEXT     ISO 8601 UTC
     entry_type    TEXT     "decision" | "appeal"
     attribution   TEXT     "ai" | "human" | "uncertain"
-    confidence    REAL     fused score 0.0–1.0 (currently Signal 1 raw_score)
-    llm_score     REAL     Signal 1 raw_score
+    confidence    REAL     fused score 0.0-1.0
+    llm_score     REAL     Signal A raw score (0.0-1.0)
     status        TEXT     "classified" | "under_review" | "resolved"
-    raw_entry     TEXT     full JSON blob for forward compatibility
+    raw_entry     TEXT     full JSON blob — includes stylo_score, sub_scores,
+                           and any future fields without needing a schema change
 """
 
 import json
@@ -69,6 +70,9 @@ def log_decision(
     attribution: str,
     confidence: float,
     llm_score: float,
+    stylo_score: float,
+    llm_verdict: str,
+    stylo_verdict: str,
     status: str = "classified",
 ) -> None:
     """
@@ -79,8 +83,6 @@ def log_decision(
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-    # The raw_entry is the full structured record as JSON — useful for
-    # forward compatibility when we add Signal 2 and more fields later.
     raw_entry = {
         "content_id": content_id,
         "creator_id": creator_id,
@@ -88,7 +90,10 @@ def log_decision(
         "entry_type": "decision",
         "attribution": attribution,
         "confidence": confidence,
-        "llm_score": llm_score,
+        "signals": {
+            "llm": {"score": llm_score, "verdict": llm_verdict},
+            "stylo": {"score": stylo_score, "verdict": stylo_verdict},
+        },
         "status": status,
     }
 
@@ -108,7 +113,7 @@ def log_decision(
                 "decision",
                 attribution,
                 confidence,
-                llm_score,
+                llm_score,  # dedicated column for quick querying
                 status,
                 json.dumps(raw_entry),
             ),

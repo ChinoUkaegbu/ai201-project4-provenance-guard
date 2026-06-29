@@ -2,12 +2,13 @@
 POST /submit
 ------------
 Accepts a JSON body with a `text` field and a `creator_id` field.
-Runs Signal 1 (LLM classifier) and returns:
+Runs both detection signals and returns a fused attribution result:
   - content_id       : unique ID for this submission (needed by appeals)
-  - attribution      : "ai" | "human" from the LLM signal
-  - confidence       : raw_score from the LLM signal (placeholder until fusion)
-  - label            : placeholder label text until the label generator is built
-  - signal_1         : full Signal 1 result for transparency
+  - attribution      : "ai" | "human" | "uncertain" — fused result
+  - confidence       : combined score 0.0-1.0 from both signals
+  - label            : plain-language transparency label
+  - signal_1         : LLM classifier result (verdict + raw_score + reasoning)
+  - signal_2         : stylometric result (verdict + raw_score + sub_scores)
   - creator_id       : echoed back from the request
 """
 
@@ -106,6 +107,9 @@ def submit():
         attribution=attribution,
         confidence=confidence,
         llm_score=signal_1["raw_score"],
+        stylo_score=signal_2["raw_score"],
+        llm_verdict=signal_1["verdict"],
+        stylo_verdict=signal_2["verdict"],
     )
 
     return (
