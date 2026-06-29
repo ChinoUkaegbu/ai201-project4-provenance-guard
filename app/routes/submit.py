@@ -21,6 +21,7 @@ from app.extensions import limiter
 from app.pipeline.llm_classifier import run_llm_classifier
 from app.pipeline.stylometric import run_stylometric
 from app.pipeline.fusion import fuse
+from app.labels.generator import generate_label
 
 submit_bp = Blueprint("submit", __name__)
 
@@ -80,25 +81,12 @@ def submit():
     )
 
     # ── 6. Transparency label ─────────────────────────────────────────────────
-    # Three variants per planning.md § 4. Confidence value informs the
-    # intensity of the language within each variant.
-    if attribution == "ai":
-        if confidence >= 0.90:
-            label = "Likely AI-Generated (high confidence)"
-        else:
-            label = "Likely AI-Generated (moderate-high confidence)"
-    elif attribution == "human":
-        if confidence <= 0.10:
-            label = "Likely Written by a Person (high confidence)"
-        else:
-            label = "Likely Written by a Person (moderate-high confidence)"
-    else:
-        # Uncertain — check whether signals actively disagreed
-        disagreement = abs(signal_1["raw_score"] - signal_2["raw_score"])
-        if disagreement > 0.30:
-            label = "Authorship Unclear — our two signals gave conflicting results"
-        else:
-            label = "Authorship Unclear"
+    label = generate_label(
+        attribution=attribution,
+        confidence=confidence,
+        llm_score=signal_1["raw_score"],
+        stylo_score=signal_2["raw_score"],
+    )
 
     # ── 7. Audit log ──────────────────────────────────────────────────────────
     log_decision(
