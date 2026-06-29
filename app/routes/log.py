@@ -19,11 +19,13 @@ intentionally open for documentation and grading visibility.
 from flask import Blueprint, jsonify, request
 
 from app.audit.logger import get_log
+from app.extensions import limiter
 
 log_bp = Blueprint("log", __name__)
 
 
 @log_bp.route("/log", methods=["GET"])
+@limiter.limit("60 per minute")
 def log():
     limit = request.args.get("limit", 50, type=int)
     limit = min(limit, 100)  # cap at 100 regardless of what was passed
