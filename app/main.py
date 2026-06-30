@@ -10,10 +10,12 @@ def create_app() -> Flask:
     from app.routes.submit import submit_bp
     from app.routes.log import log_bp
     from app.routes.appeals import appeals_bp
+    from app.routes.analytics import analytics_bp
 
     app.register_blueprint(submit_bp)
     app.register_blueprint(log_bp)
     app.register_blueprint(appeals_bp)
+    app.register_blueprint(analytics_bp)
 
     return app
 

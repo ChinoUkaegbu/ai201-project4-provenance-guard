@@ -244,6 +244,52 @@ Note the first two entries from the top: the same `content_id` (`5d988396-...`) 
 
 ---
 
+## Analytics Dashboard
+
+`GET /analytics` returns aggregate metrics computed over the audit log, giving a platform operator a sense of how the system is behaving in production rather than just inspecting individual decisions. No new signals or storage were needed — every metric is derived from data already written by `POST /submit` and `POST /appeal`.
+
+**Metrics returned:**
+
+1. **Detection pattern** — counts and percentages of `ai` / `human` / `uncertain` verdicts across all decisions. This is the headline number a platform would want: what fraction of submitted content is the system actually flagging.
+2. **Appeal rate** — the percentage of decisions that have been contested, deduplicated by `content_id` (a single piece of content can technically be appealed more than once within the rate limit, but it should only count once toward the rate). A high appeal rate on a particular attribution bucket would be a signal that the system's thresholds or copy need revisiting.
+3. **Average confidence by attribution** — the mean fused confidence score within each verdict bucket. This distinguishes "the system says AI a lot, and is usually very sure" from "the system says AI a lot, but usually only just barely" — two very different operational pictures that the raw detection pattern alone can't show.
+4. **Signal agreement rate** _(the additional metric)_ — the percentage of decisions where Signal 1 (LLM) and Signal 2 (stylometric) reached the same verdict. This was chosen specifically because it gives direct visibility into how often the disagreement penalty in the fusion layer is actually doing work. A low agreement rate would suggest the two signals are picking up on different things often enough that the `uncertain` label is earning its keep; a very high agreement rate might suggest one signal is redundant or the test content skews toward easy cases.
+   **Example response shape:**
+
+```json
+{
+  "total_submissions": 12,
+  "detection_pattern": {
+    "ai": 5,
+    "human": 3,
+    "uncertain": 4,
+    "ai_pct": 41.67,
+    "human_pct": 25.0,
+    "uncertain_pct": 33.33
+  },
+  "appeal_rate": {
+    "total_appeals": 2,
+    "unique_appealed_content": 2,
+    "total_decisions": 12,
+    "rate_pct": 16.67
+  },
+  "avg_confidence_by_attribution": {
+    "ai": 0.8124,
+    "human": 0.1432,
+    "uncertain": 0.4983
+  },
+  "signal_agreement_rate": {
+    "agree_count": 9,
+    "disagree_count": 3,
+    "rate_pct": 75.0
+  }
+}
+```
+
+Rate limited to 60/minute, same as `GET /log`, and intentionally open without authentication for the same reason — this is a grading/demo convenience, not a production-ready access pattern. A real deployment would put this behind an admin token.
+
+---
+
 ## Rate Limiting
 
 ### Limits

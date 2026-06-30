@@ -123,6 +123,123 @@ def log_decision(
         conn.close()
 
 
+def get_analytics() -> dict:
+    """
+    Compute aggregate metrics over the audit log for the analytics dashboard.
+
+    Returns:
+        {
+            "total_submissions":     int,
+            "detection_pattern": {
+                "ai":        int,
+                "human":     int,
+                "uncertain": int,
+                "ai_pct":        float,
+                "human_pct":     float,
+                "uncertain_pct": float
+            },
+            "appeal_rate": {
+                "total_appeals":   int,
+                "total_decisions": int,
+                "rate_pct":        float
+            },
+            "avg_confidence_by_attribution": {
+                "ai":        float | None,
+                "human":     float | None,
+                "uncertain": float | None
+            },
+            "signal_agreement_rate": {
+                "agree_count":    int,
+                "disagree_count": int,
+                "rate_pct":       float
+            }
+        }
+    """
+    conn = _get_connection()
+    try:
+        decisions = conn.execute(
+            "SELECT raw_entry FROM audit_log WHERE entry_type = 'decision'"
+        ).fetchall()
+        appeals = conn.execute(
+            "SELECT raw_entry FROM audit_log WHERE entry_type = 'appeal'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    decision_entries = [json.loads(row["raw_entry"]) for row in decisions]
+    appeal_entries = [json.loads(row["raw_entry"]) for row in appeals]
+
+    total = len(decision_entries)
+
+    # ── Detection pattern ─────────────────────────────────────────────────────
+    counts = {"ai": 0, "human": 0, "uncertain": 0}
+    for entry in decision_entries:
+        attribution = entry.get("attribution", "uncertain")
+        counts[attribution] = counts.get(attribution, 0) + 1
+
+    def pct(n: int) -> float:
+        return round((n / total) * 100, 2) if total else 0.0
+
+    detection_pattern = {
+        **counts,
+        "ai_pct": pct(counts["ai"]),
+        "human_pct": pct(counts["human"]),
+        "uncertain_pct": pct(counts["uncertain"]),
+    }
+
+    # ── Appeal rate ───────────────────────────────────────────────────────────
+    # Appeals are deduplicated by content_id in case a content_id is appealed
+    # more than once (the rate limiter allows up to 3/hour per creator).
+    appealed_content_ids = {e["content_id"] for e in appeal_entries}
+    appeal_rate = {
+        "total_appeals": len(appeal_entries),
+        "unique_appealed_content": len(appealed_content_ids),
+        "total_decisions": total,
+        "rate_pct": (
+            round((len(appealed_content_ids) / total) * 100, 2) if total else 0.0
+        ),
+    }
+
+    # ── Average confidence by attribution ────────────────────────────────────
+    avg_confidence = {}
+    for label in ("ai", "human", "uncertain"):
+        scores = [
+            e["confidence"] for e in decision_entries if e.get("attribution") == label
+        ]
+        avg_confidence[label] = round(sum(scores) / len(scores), 4) if scores else None
+
+    # ── Signal agreement rate ────────────────────────────────────────────────
+    # How often do Signal 1 (LLM) and Signal 2 (stylometric) verdicts agree?
+    # This is a direct window into how often the disagreement penalty fires.
+    agree = 0
+    disagree = 0
+    for entry in decision_entries:
+        signals = entry.get("signals", {})
+        llm_verdict = signals.get("llm", {}).get("verdict")
+        stylo_verdict = signals.get("stylo", {}).get("verdict")
+        if llm_verdict is None or stylo_verdict is None:
+            continue
+        if llm_verdict == stylo_verdict:
+            agree += 1
+        else:
+            disagree += 1
+
+    signal_total = agree + disagree
+    signal_agreement_rate = {
+        "agree_count": agree,
+        "disagree_count": disagree,
+        "rate_pct": round((agree / signal_total) * 100, 2) if signal_total else 0.0,
+    }
+
+    return {
+        "total_submissions": total,
+        "detection_pattern": detection_pattern,
+        "appeal_rate": appeal_rate,
+        "avg_confidence_by_attribution": avg_confidence,
+        "signal_agreement_rate": signal_agreement_rate,
+    }
+
+
 def get_log(limit: int = 50) -> list[dict]:
     """
     Return the most recent *limit* audit log entries as a list of dicts.
